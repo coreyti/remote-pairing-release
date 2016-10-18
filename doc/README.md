@@ -14,6 +14,9 @@ The following software must be available:
 - [ ] Create a "workspace":
 
   ```bash
+  #!/usr/bin/env bash
+  set -euo pipefail
+
   : ${PROVIDER:?}   # [required] One of: [GCP].
   : ${WORKSPACE:?}  # [required] A directory path.
 
@@ -24,7 +27,8 @@ The following software must be available:
     awk 'NR==1 && match($0, /^ +/){n=RLENGTH} {print substr($0, n+1)}'
   }
 
-  outdent > "${WORKSPACE}/.envrc" << EOF
+  function envrc {
+    outdent > "${WORKSPACE}/.envrc" << EOF
     #!/usr/bin/env bash
 
     : \${PROVIDER:='${PROVIDER}'}
@@ -43,4 +47,21 @@ The following software must be available:
       fi
     }
   EOF
+  }
+
+  function scaffold {
+    pushd ${ctx} > /dev/null
+      . .envrc
+
+      [ ! -d './release' ] && \
+        git clone ${RELEASE_GIT} release
+
+      [ ! -d './install' ] && \
+        mkdir -p install/{director,product}
+
+      require bosh && gem install bosh_cli
+    popd > /dev/null
+  }
+
+  envrc && scaffold
   ```
