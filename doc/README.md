@@ -4,10 +4,11 @@ A workflow for bootstrapping the BOSH Remote Pairing Release on `GCP`.
 
 ## Prerequisites
 
-The following software must be available:
-
-- [ ] `git`
-- [ ] `ruby`
+- [ ] [Sign up](https://cloud.google.com/compute/docs/signup) and activate a Google Cloud Platform (GCP) account
+- [ ] Ensure the following software are installed:
+  - [ ] [`gcloud`](https://cloud.google.com/sdk/)
+  - [ ] `git`
+  - [ ] `ruby`
 
 ## Preparation
 
@@ -17,7 +18,7 @@ The following software must be available:
   #!/usr/bin/env bash
   set -euo pipefail
 
-  : ${PROVIDER:?}   # [required] One of: [GCP].
+  : ${PROJECT_ID:?} # [required] GCP project ID.
   : ${WORKSPACE:?}  # [required] A directory path.
 
   mkdir -p "${WORKSPACE}"
@@ -31,9 +32,15 @@ The following software must be available:
     outdent > "${WORKSPACE}/.envrc" << EOF
     #!/usr/bin/env bash
 
-    : \${PROVIDER:='${PROVIDER}'}
-    : \${WORKSPACE:='${ctx}'}
+    : \${PROJECT_ID:='${PROJECT_ID}'}
+    : \${WORKSPACE:='${WORKSPACE}'}
     : \${RELEASE_GIT:='https://github.com/pivotal-cf-experimental/remote-pairing-release'}
+
+    ctx='${ctx}'
+
+    function outdent {
+      awk 'NR==1 && match(\$0, /^ +/){n=RLENGTH} {print substr(\$0, n+1)}'
+    }
 
     function require {
       printf "checking for '\$1' ... "
