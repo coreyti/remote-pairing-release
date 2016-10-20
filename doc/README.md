@@ -43,6 +43,7 @@ A workflow for bootstrapping the BOSH Remote Pairing Release on `GCP`.
     : \${NAMESPACE:='${NAMESPACE}'}
     : \${INSTALL_REGION:='${INSTALL_REGION}'}
     : \${INSTALL_ZONE:='${INSTALL_ZONE}'}
+    : \${INSTALL_CIDR:='${INSTALL_CIDR}'}
     : \${RELEASE_GIT:='https://github.com/pivotal-cf-experimental/remote-pairing-release'}
 
     ctx='${ctx}'
@@ -95,7 +96,7 @@ A workflow for bootstrapping the BOSH Remote Pairing Release on `GCP`.
   envrc && scaffold
   ```
 
-- [ ] Bootstrap BOSH director:
+- [ ] Bootstrap BOSH director (i.e., set up IaaS):
 
   ```bash
   #!/usr/bin/env bash
@@ -107,7 +108,7 @@ A workflow for bootstrapping the BOSH Remote Pairing Release on `GCP`.
   function generate-key {
     # Create key...
     gcloud iam service-accounts create $(name account)
-    gcloud iam service-accounts keys create ./director-key.json \
+    gcloud iam service-accounts keys create ./director-acct.json \
       --iam-account $(acct)
 
     # Grant permissions (editor access)...
@@ -141,7 +142,7 @@ EOF
     provider "google" {
       project = "\${var.project}"
       region = "\${var.region}"
-      credentials = "\${file("./director-key.json")}"
+      credentials = "\${file("./director-acct.json")}"
     }
 
     resource "google_compute_network" "director" {
