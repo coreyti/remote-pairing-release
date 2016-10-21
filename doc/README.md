@@ -7,9 +7,10 @@ A workflow for bootstrapping the BOSH Remote Pairing Release on `GCP`.
 - [ ] [Sign up](https://cloud.google.com/compute/docs/signup) and activate a Google Cloud Platform (GCP) account
 - [ ] Enable GCP API access [TODO](.)
 - [ ] Ensure the following software are installed:
+  - [ ] [`bosh-init`](https://bosh.io/docs/install-bosh-init.html)
   - [ ] [`gcloud`](https://cloud.google.com/sdk/)
-  - [ ] `git`
-  - [ ] `ruby`
+  - [ ] [`git`](https://git-scm.com/)
+  - [ ] [`ruby`](https://www.ruby-lang.org/)
   - [ ] [`terraform`](https://www.terraform.io/downloads.html)
 
 ## Preparation
@@ -105,19 +106,30 @@ A workflow for bootstrapping the BOSH Remote Pairing Release on `GCP`.
   : ${WORKSPACE:?} # [required] A directory path.
   . ${WORKSPACE}/.envrc
 
-  function generate-key {
-    # Create key...
+  function generate-keys {
+    # Create GCP service account...
     gcloud iam service-accounts create $(name account)
-    gcloud iam service-accounts keys create ./director-acct.json \
-      --iam-account $(acct)
 
     # Grant permissions (editor access)...
     gcloud projects add-iam-policy-binding ${PROJECT_ID} \
       --member serviceAccount:$(acct) \
       --role roles/editor
+
+    # Create service account JSON key...
+    gcloud iam service-accounts keys create ./director-acct.json \
+      --iam-account $(acct)
+
+    # Create BOSH director SSH key...
+    ssh-keygen -b 2048 -t rsa -C vcap@director -f director.key -P ''
   }
 
   function generate-tf {
+    outdent > './director-out.tf' << EOF
+    output "ip" {
+      value = "\${google_compute_address.director-ip.address}"
+    }
+  EOF
+
     outdent > './director-vars.tf' << EOF
     variable "namespace" {
       type = "string"
@@ -134,7 +146,7 @@ A workflow for bootstrapping the BOSH Remote Pairing Release on `GCP`.
     variable "cidr" {
       type = "string"
     }
-EOF
+  EOF
 
     # Task: Generate BOSH director Terraform template
     # ----
@@ -197,7 +209,7 @@ EOF
         ports    = ["53"]
       }
     }
-EOF
+  EOF
   }
 
   function execute {
@@ -209,8 +221,184 @@ EOF
   }
 
   pushd "${WORKSPACE}/install/director" > /dev/null
-    generate-key
+    generate-keys
     generate-tf
+    execute
+  popd > /dev/null
+  ```
+
+- [ ] Deploy BOSH director:
+
+  ```bash
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  : ${WORKSPACE:?} # [required] A directory path.
+  . ${WORKSPACE}/.envrc
+
+  addr_base=$(echo ${INSTALL_CIDR} | cut -d . -f1-3)
+  function addr {
+    echo "${addr_base}.$1"
+  }
+
+  function dump {
+    cat $1 | tr "\n" " "
+  }
+
+  function generate-yml {
+    public_ip=$(terraform output ip)
+    outdent > './director.yml' << EOF
+    ---
+    name: bosh
+
+    releases:
+    - name: bosh
+      url: https://bosh.io/d/github.com/cloudfoundry/bosh?v=257.15
+      sha1: f4cf3579bfac994cd3bde4a9d8cbee3ad189c8b2
+    - name: bosh-google-cpi
+      url: https://bosh.io/d/github.com/cloudfoundry-incubator/bosh-google-cpi-release?v=25.5.0
+      sha1: 974c097f08920b7d9f3a7a2f6fe64495c387a644
+
+    # platform
+    # ----------------------------------------------------------
+    disk_pools:
+    - name: disks
+      disk_size: 20000
+      cloud_properties: { type: pd-standard }
+
+    networks:
+    - name: private
+      type: manual
+      subnets:
+      - range: ${INSTALL_CIDR}
+        gateway: $(addr 1)
+        cloud_properties:
+          network_name:     ${NAMESPACE}-director
+          subnetwork_name:  ${NAMESPACE}-subnet
+          tags:
+            - ${NAMESPACE}-director-internal
+            - ${NAMESPACE}-director-external
+    - name: public
+      type: vip
+
+    resource_pools:
+    - name: vms
+      network: private
+      stemcell:
+        url: https://bosh.io/d/stemcells/bosh-google-kvm-ubuntu-trusty-go_agent?v=3263.7
+        sha1: a09ce8b4acfa9876f52ee7b4869b4b23f27d5ace
+      cloud_properties:
+        machine_type: n1-standard-2
+        root_disk_size_gb: 40
+        root_disk_type: pd-standard
+        service_scopes:
+          - compute
+          - devstorage.full_control
+        zone: ${INSTALL_ZONE}
+
+    jobs:
+    - name: bosh
+      instances: 1
+
+      templates:
+      - {name: nats, release: bosh}
+      - {name: postgres, release: bosh}
+      - {name: blobstore, release: bosh}
+      - {name: director, release: bosh}
+      - {name: health_monitor, release: bosh}
+      - {name: registry, release: bosh}
+      - {name: google_cpi, release: bosh-google-cpi}
+
+      resource_pool: vms
+      persistent_disk_pool: disks
+
+      networks:
+      - name: private
+        static_ips: [$(addr 6)]
+        default: [dns, gateway]
+      - name: public
+        static_ips: [${public_ip}]
+
+      properties:
+        nats:
+          address: 127.0.0.1
+          user: nats
+          password: nats-password
+
+        postgres: &db
+          listen_address: 127.0.0.1
+          host: 127.0.0.1
+          user: postgres
+          password: postgres-password
+          database: bosh
+          adapter: postgres
+
+        registry:
+          address: $(addr 6)
+          host: $(addr 6)
+          db: *db
+          http: {user: admin, password: admin, port: 25777}
+          username: admin
+          password: admin
+          port: 25777
+
+        blobstore:
+          address: $(addr 6)
+          port: 25250
+          provider: dav
+          director: {user: director, password: director-password}
+          agent: {user: agent, password: agent-password}
+
+        director:
+          address: 127.0.0.1
+          name: bosh
+          db: *db
+          cpi_job: google_cpi
+          max_threads: 10
+          user_management:
+            provider: local
+            local:
+              users:
+              - {name: admin, password: admin}
+              - {name: hm, password: hm-password}
+
+        hm:
+          director_account: {user: hm, password: hm-password}
+          resurrector_enabled: true
+
+        google: &google
+          project: ${PROJECT_ID}
+          json_key: '$(dump 'director-acct.json')'
+
+        agent: {mbus: "nats://nats:nats-password@$(addr 6):4222"}
+
+        ntp: &ntp [0.pool.ntp.org, 1.pool.ntp.org]
+
+    cloud_provider:
+      template: {name: google_cpi, release: bosh-google-cpi}
+
+      ssh_tunnel:
+        host: ${public_ip}
+        port: 22
+        user: vcap
+        private_key: ./director.key
+
+      mbus: "https://mbus:mbus-password@${public_ip}:6868"
+
+      properties:
+        google: *google
+        agent: {mbus: "https://mbus:mbus-password@0.0.0.0:6868"}
+        blobstore: {provider: local, path: /var/vcap/micro_bosh/data/cache}
+        ntp: *ntp
+  EOF
+  }
+
+  function execute {
+    bosh-init deploy director.yml
+  }
+
+  pushd "${WORKSPACE}/install/director" > /dev/null
+    generate-yml
     execute
   popd > /dev/null
   ```
